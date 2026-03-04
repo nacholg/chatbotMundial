@@ -1,0 +1,31 @@
+# ENV
+.env
+.ENV
+.env.*
+
+# Virtual env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Alembic cache
+alembic/__pycache__/
+
+# Local executables
+ngrok.exe
+ngrok
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+*.log

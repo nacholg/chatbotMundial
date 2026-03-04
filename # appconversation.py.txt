@@ -1,0 +1,270 @@
+# app/conversation.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional
+
+from .settings import settings
+from .whatsapp import send_text, send_buttons
+
+# Excel (SharePoint) opcional — queda “best-effort”
+try:
+    from .ms_graph_excel import append_row_to_sharepoint_excel
+except Exception:
+    append_row_to_sharepoint_excel = None
+
+_sessions: Dict[str, Dict[str, Any]] = {}
+
+STATE_START = "START"
+STATE_ASK_PAX = "ASK_PAX"
+STATE_ASK_MATCH_MODE = "ASK_MATCH_MODE"
+STATE_ASK_MATCH_TEXT = "ASK_MATCH_TEXT"
+STATE_ASK_CONTACT = "ASK_CONTACT"
+STATE_HUMAN_PENDING = "HUMAN_PENDING"
+
+
+def reset_session(user_id: str) -> None:
+    _sessions.pop(user_id, None)
+
+
+def get_session(user_id: str) -> Dict[str, Any]:
+    s = _sessions.get(user_id)
+    if not s:
+        s = {"state": STATE_START, "data": {}}
+        _sessions[user_id] = s
+    return s
+
+
+async def show_main_menu(user_id: str):
+    await send_buttons(
+        to=user_id,
+        header_text="Mundial FIFA 2026",
+        body_text="Hola 👋 Soy el asistente. ¿Qué querés hacer?",
+        footer_text="Escribí ASESOR o /reset",
+        buttons=[
+            {"id": "MENU_TICKETS", "title": "🎟️ Entradas"},
+            {"id": "MENU_HUMAN", "title": "👤 Asesor"},
+        ],
+    )
+
+
+async def ask_pax(user_id: str):
+    await send_buttons(
+        to=user_id,
+        header_text="Pasajeros",
+        body_text="¿Cuántas personas viajan?",
+        buttons=[
+            {"id": "PAX_1_2", "title": "1–2"},
+            {"id": "PAX_3_5", "title": "3–5"},
+            {"id": "PAX_6_10", "title": "6–10"},
+        ],
+        footer_text="Si son más, escribí: 10+",
+    )
+
+
+def parse_pax_id(pax_id: str) -> Optional[str]:
+    return {
+        "PAX_1_2": "1-2",
+        "PAX_3_5": "3-5",
+        "PAX_6_10": "6-10",
+    }.get(pax_id)
+
+
+async def ask_match_mode(user_id: str):
+    await send_buttons(
+        to=user_id,
+        header_text="Partidos",
+        body_text="¿Ya tenés partidos definidos?",
+        buttons=[
+            {"id": "MATCH_HAVE", "title": "⚽ Ya los tengo"},
+            {"id": "MATCH_DONTKNOW", "title": "🤝 No sé"},
+            {"id": "MENU_HUMAN", "title": "👤 Asesor"},
+        ],
+    )
+
+
+def build_customer_summary(data: Dict[str, Any]) -> str:
+    pax = data.get("pax_range", "-")
+    matches = data.get("matches_text", "(no definido)")
+    contact = data.get("contact", "(pendiente)")
+    return (
+        "✅ Resumen de tu consulta\n"
+        "• Tipo: Entradas Hospitality\n"
+        f"• Pasajeros: {pax}\n"
+        f"• Partidos: {matches}\n"
+        f"• Contacto: {contact}\n"
+    )
+
+
+def build_internal_summary(user_phone: str, state: str, data: Dict[str, Any]) -> str:
+    pax = data.get("pax_range", "(sin dato)")
+    matches = data.get("matches_text", "(sin dato)")
+    contact = data.get("contact", "(sin dato)")
+    last_text = data.get("last_text", "")
+
+    return (
+        "🔔 NUEVO LEAD MUNDIAL 2026 (Hospitality)\n"
+        f"Cliente WA: {user_phone}\n"
+        f"Estado: {state}\n"
+        f"Pax: {pax}\n"
+        f"Partidos: {matches}\n"
+        f"Contacto: {contact}\n"
+        + (f"\nÚltimo msg: {last_text}" if last_text else "")
+        + "\n\nResponder desde el número oficial."
+    )
+
+
+async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
+    """
+    1) Envía resumen al WhatsApp interno (si está configurado)
+    2) Intenta insertar fila en Excel SharePoint (si está habilitado y autorizado)
+    """
+    # 1) WhatsApp interno
+    if settings.INTERNAL_SALES_WA_TO:
+        try:
+            await send_text(settings.INTERNAL_SALES_WA_TO, build_internal_summary(user_phone, state, data))
+        except Exception as e:
+            print("[HANDOFF] Internal WA send failed:", repr(e))
+
+    # 2) Excel SharePoint (best-effort)
+    if append_row_to_sharepoint_excel and getattr(settings, "MS_EXCEL_ENABLED", 0):
+        try:
+            ts = datetime.now(timezone.utc).isoformat()
+            row = [
+                ts,
+                user_phone,
+                data.get("pax_range", ""),
+                data.get("matches_text", ""),
+                data.get("contact", ""),
+                "HUMAN_PENDING",
+            ]
+            await append_row_to_sharepoint_excel(row)
+        except Exception as e:
+            print("[EXCEL] append failed:", repr(e))
+
+
+async def handle_input(user_id: str, text: str | None, button_id: str | None):
+    session = get_session(user_id)
+    state = session["state"]
+    data = session["data"]
+
+    # Guardar último texto para que el aviso interno sea útil
+    if text and text.strip():
+        data["last_text"] = text.strip()
+
+    print(f"[DEBUG] user={user_id} state={state} text={text!r} button_id={button_id!r}")
+
+    # Reset global
+    cmd = (text or "").strip().lower()
+    if cmd in ("/reset", "reset", "reiniciar", "empezar de nuevo", "/start", "start"):
+        reset_session(user_id)
+        await show_main_menu(user_id)
+        return
+
+    # Si ya está en manos humanas: responder 1 sola vez (evita spam)
+    if state == STATE_HUMAN_PENDING:
+        if not data.get("pending_notified"):
+            data["pending_notified"] = True
+            await send_text(user_id, "✅ Ya tomamos tu consulta. Un asesor te responde en breve.")
+        return
+
+    # Atajo global a humano (texto o botón)
+    if (text or "").strip().upper() == "ASESOR" or button_id == "MENU_HUMAN":
+        session["state"] = STATE_HUMAN_PENDING
+        await send_text(user_id, "Perfecto. Un asesor te escribe en breve 👤")
+        await _handoff(user_id, state, data)
+        return
+
+    # START
+    if state == STATE_START:
+        if button_id == "MENU_TICKETS":
+            data["intent"] = "entradas hospitality"
+            session["state"] = STATE_ASK_PAX
+            await ask_pax(user_id)
+            return
+
+        await show_main_menu(user_id)
+        return
+
+    # ASK_PAX
+    if state == STATE_ASK_PAX:
+        if button_id:
+            pax = parse_pax_id(button_id)
+            if pax:
+                data["pax_range"] = pax
+                session["state"] = STATE_ASK_MATCH_MODE
+                await ask_match_mode(user_id)
+                return
+
+        if text and text.strip() == "10+":
+            data["pax_range"] = "10+"
+            session["state"] = STATE_ASK_MATCH_MODE
+            await ask_match_mode(user_id)
+            return
+
+        await send_text(user_id, "No entendí la cantidad. Elegí una opción o escribí 10+.")
+        return
+
+    # ASK_MATCH_MODE
+    if state == STATE_ASK_MATCH_MODE:
+        if button_id == "MATCH_HAVE":
+            session["state"] = STATE_ASK_MATCH_TEXT
+            await send_text(
+                user_id,
+                "Genial. Enviame en *un solo mensaje* los partidos que querés.\n"
+                "Ej:\n"
+                "• Miami 03/07 Octavos (2 entradas)\n"
+                "• Argentina - Fase de grupos (ciudad flexible)\n"
+                "• Final / Semis\n"
+            )
+            return
+
+        if button_id == "MATCH_DONTKNOW":
+            data["matches_text"] = "(no definido)"
+            session["state"] = STATE_ASK_CONTACT
+            await send_text(
+                user_id,
+                "Perfecto 👌\n\nTrabajamos exclusivamente con Hospitality.\n"
+                "Un asesor te va a contactar para armar opciones.\n\n"
+                "Pasame *Nombre y Email* (en un solo mensaje).\n"
+                "Ej: Juan Pérez - juan@email.com"
+            )
+            return
+
+        await send_text(user_id, "Elegí una opción: 'Ya los tengo' o 'No sé'.")
+        return
+
+    # ASK_MATCH_TEXT
+    if state == STATE_ASK_MATCH_TEXT:
+        if text and text.strip():
+            data["matches_text"] = text.strip()
+            session["state"] = STATE_ASK_CONTACT
+            await send_text(
+                user_id,
+                "Perfecto 👌\n\nTrabajamos exclusivamente con Hospitality.\n\n"
+                "Pasame *Nombre y Email* (en un solo mensaje).\n"
+                "Ej: Juan Pérez - juan@email.com"
+            )
+            return
+
+        await send_text(user_id, "Mandame el detalle en texto (un solo mensaje).")
+        return
+
+    # ASK_CONTACT
+    if state == STATE_ASK_CONTACT:
+        if text and text.strip():
+            data["contact"] = text.strip()
+            session["state"] = STATE_HUMAN_PENDING
+
+            summary = build_customer_summary(data)
+            await send_text(user_id, summary + "\nGracias. Un asesor te escribe en breve 👤")
+
+            await _handoff(user_id, state, data)
+            return
+
+        await send_text(user_id, "Necesito Nombre y Email en un solo mensaje. Ej: Juan Pérez - juan@email.com")
+        return
+
+    # fallback
+    await show_main_menu(user_id)
+    session["state"] = STATE_START
