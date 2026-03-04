@@ -2,11 +2,17 @@ import os
 from sqlalchemy import create_engine
 
 def normalize_db_url(url: str) -> str:
-    # Railway suele entregar postgres://
+    url = url.strip().strip('"').strip("'")
+
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
-    # Forzar driver psycopg3
+    if url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+
+    if url.startswith("postgresql+psycopg3://"):
+        url = url.replace("postgresql+psycopg3://", "postgresql+psycopg://", 1)
+
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
 
