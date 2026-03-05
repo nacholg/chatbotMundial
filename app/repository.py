@@ -7,7 +7,16 @@ from sqlalchemy import desc
 from app.models import User, Lead, Conversation, Message
 
 
-def get_or_create_user(db: Session, wa_user_id: str, phone: str | None = None, full_name: str | None = None) -> User:
+def message_exists(db: Session, wa_message_id: str) -> bool:
+    return db.query(Message.id).filter(Message.wa_message_id == wa_message_id).first() is not None
+
+
+def get_or_create_user(
+    db: Session,
+    wa_user_id: str,
+    phone: str | None = None,
+    full_name: str | None = None
+) -> User:
     user = db.query(User).filter(User.wa_user_id == wa_user_id).first()
     if user:
         if phone and not user.phone:
@@ -34,6 +43,7 @@ def get_or_create_open_lead(db: Session, user_id: int, source: str = "whatsapp")
     )
     if lead:
         return lead
+
     lead = Lead(user_id=user_id, status="open", source=source)
     db.add(lead)
     db.commit()
@@ -41,6 +51,38 @@ def get_or_create_open_lead(db: Session, user_id: int, source: str = "whatsapp")
     return lead
 
 
+def get_or_create_open_conversation(
+    db: Session,
+    *,
+    user_id: int,
+    lead_id: int | None,
+    state: str | None = None,
+) -> Conversation:
+    """
+    Reusa una conversación existente para ese lead (o user si no hay lead),
+    y si no existe crea una nueva.
+    """
+    q = db.query(Conversation).filter(Conversation.user_id == user_id)
+
+    if lead_id is not None:
+        q = q.filter(Conversation.lead_id == lead_id)
+
+    conv = q.order_by(desc(Conversation.id)).first()
+    if conv:
+        if state and not conv.state:
+            conv.state = state
+            db.commit()
+            db.refresh(conv)
+        return conv
+
+    conv = Conversation(user_id=user_id, lead_id=lead_id, state=state)
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return conv
+
+
+# (lo dejo por compatibilidad si en otro lado lo usás)
 def start_conversation(db: Session, user_id: int, lead_id: int | None, state: str | None = None) -> Conversation:
     conv = Conversation(user_id=user_id, lead_id=lead_id, state=state)
     db.add(conv)

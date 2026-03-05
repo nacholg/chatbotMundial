@@ -114,7 +114,7 @@ class Message(Base):
     direction = Column(String(8), nullable=False)  # "in" / "out"
     text = Column(Text, nullable=True)
     button_id = Column(String(80), nullable=True)
-    wa_message_id = Column(String(120), nullable=True, index=True)
+    wa_message_id = Column(String(120), nullable=True, unique=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
