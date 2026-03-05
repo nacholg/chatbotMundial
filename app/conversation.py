@@ -186,8 +186,8 @@ INSTANCE_LABELS = {
     "INST_R32_MIAMI": "🎯 16vos Miami",
     "INST_R16_ATL": "🔥 8vos Atlanta",
     "INST_QF_KC": "💎 4tos Kansas City",
-    "INST_SF_NY": "🚀 Semifinal New York",
-    "INST_F_LA": "🏆 Final Los Angeles",
+    "INST_SF_ATL": "🚀 Semifinal Atlanta",
+    "INST_F_NY": "🏆 Final New York",
 }
 
 
@@ -344,8 +344,8 @@ async def pick_instances_menu(user_id: str, data: Dict[str, Any]):
         footer_text="Podés tocar ✅ Listo cuando quieras",
         buttons=[
             {"id": "INST_QF_KC", "title": "4tos KC"},
-            {"id": "INST_SF_NY", "title": "Semifinal NY"},
-            {"id": "INST_F_LA", "title": "Final LA"},
+            {"id": "INST_SF_NY", "title": "Semifinal Atlanta"},
+            {"id": "INST_F_LA", "title": "Final New York"},
         ],
     )
     await _send_buttons(
