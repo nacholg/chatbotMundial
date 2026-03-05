@@ -81,11 +81,48 @@ def _conv_id(user_id: str) -> Optional[int]:
 
 
 def _lead_id(user_id: str) -> Optional[int]:
+    """
+    Devuelve el lead_id asociado al usuario.
+    1️⃣ Primero intenta leerlo desde la sesión
+    2️⃣ Si no existe (ej: reinicio del container), lo reconstruye desde la DB
+    """
+
     s = get_session(user_id)
     lid = s.get("data", {}).get("_lead_id")
-    return lid if isinstance(lid, int) else None
 
+    if isinstance(lid, int):
+        return lid
 
+    # reconstrucción desde DB
+    db = SessionLocal()
+    try:
+        from app.models import User
+
+        user = db.query(User).filter(User.wa_user_id == user_id).first()
+        if not user:
+            return None
+
+        lead = (
+            db.query(Lead)
+            .filter(Lead.user_id == user.id)
+            .order_by(Lead.id.desc())
+            .first()
+        )
+
+        if not lead:
+            return None
+
+        # guardar nuevamente en sesión
+        s["data"]["_lead_id"] = lead.id
+        _save_session(user_id, s)
+
+        return lead.id
+
+    except Exception as e:
+        print("[DB] lead lookup failed:", repr(e))
+        return None
+    finally:
+        db.close()
 # -------------------------
 # Outbound wrappers (log en DB via whatsapp.py)
 # -------------------------

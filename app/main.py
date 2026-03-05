@@ -77,8 +77,11 @@ async def receive_whatsapp_webhook(request: Request):
                 elif msg_type == "interactive":
                     interactive = msg.get("interactive") or {}
                     i_type = interactive.get("type")
+
                     if i_type == "button_reply":
                         button_id = (interactive.get("button_reply") or {}).get("id")
+                    elif i_type == "list_reply":
+                        button_id = (interactive.get("list_reply") or {}).get("id")
                     # si más adelante usan list_reply, se suma acá
 
                 db = SessionLocal()

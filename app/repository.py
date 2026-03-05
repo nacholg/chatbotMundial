@@ -4,9 +4,23 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from app.models import User, Lead, Conversation, Message
+from app.models import User, Lead, Conversation, Message, LeadSelection
 
-
+def log_lead_selection(
+    db: Session,
+    *,
+    lead_id: int,
+    event_id: int,
+    quantity: int = 1,
+) -> LeadSelection:
+    sel = LeadSelection(
+        lead_id=lead_id,
+        event_id=event_id,
+        quantity=quantity,
+    )
+    db.add(sel)
+    db.commit()
+    db.refresh(sel)
 def message_exists(db: Session, wa_message_id: str) -> bool:
     return db.query(Message.id).filter(Message.wa_message_id == wa_message_id).first() is not None
 
