@@ -86,14 +86,12 @@ def _lead_id(user_id: str) -> Optional[int]:
     1️⃣ Primero intenta leerlo desde la sesión
     2️⃣ Si no existe (ej: reinicio del container), lo reconstruye desde la DB
     """
-
     s = get_session(user_id)
     lid = s.get("data", {}).get("_lead_id")
 
     if isinstance(lid, int):
         return lid
 
-    # reconstrucción desde DB
     db = SessionLocal()
     try:
         from app.models import User
@@ -108,14 +106,11 @@ def _lead_id(user_id: str) -> Optional[int]:
             .order_by(Lead.id.desc())
             .first()
         )
-
         if not lead:
             return None
 
-        # guardar nuevamente en sesión
         s["data"]["_lead_id"] = lead.id
         _save_session(user_id, s)
-
         return lead.id
 
     except Exception as e:
@@ -123,6 +118,8 @@ def _lead_id(user_id: str) -> Optional[int]:
         return None
     finally:
         db.close()
+
+
 # -------------------------
 # Outbound wrappers (log en DB via whatsapp.py)
 # -------------------------
@@ -149,15 +146,48 @@ async def _send_buttons(
 
 
 # -------------------------
+# Normalización de button_id (robusta)
+# -------------------------
+def _normalize_button_id(button_id: Optional[str]) -> Optional[str]:
+    """
+    En condiciones normales llega un id simple (ej: INST_QF_KC).
+    Si por algún bug te llega una string con comas, elegimos el primer token útil.
+    """
+    if not button_id:
+        return None
+
+    bid = str(button_id).strip()
+    if not bid:
+        return None
+
+    if "," in bid:
+        parts = [p.strip() for p in bid.split(",") if p.strip()]
+        # prioriza tokens reconocibles
+        for p in parts:
+            if p.startswith("INST_") or p in {
+                "MENU_TICKETS", "MENU_HUMAN",
+                "PAX_1_2", "PAX_3_5", "PAX_6_10",
+                "HOTEL_YES", "HOTEL_NO",
+                "CITY_SPECIFIC", "CITY_FLEX",
+                "INST_DONE", "INST_CLEAR",
+            }:
+                return p
+        return parts[0] if parts else bid
+
+    return bid
+
+
+# -------------------------
 # Instancias Argentina (multi-select)
 # -------------------------
+# ✅ IMPORTANTE: estos IDs ahora matchean con events.code en tu DB
 INSTANCE_LABELS = {
     "INST_GROUPS": "🇦🇷 Fase de Grupos",
-    "INST_R32": "🎯 16vos de final",
-    "INST_R16": "🔥 8vos de final",
-    "INST_QF": "💎 4tos de final",
-    "INST_SF": "🚀 Semifinal",
-    "INST_F": "🏆 Final",
+    "INST_R32_MIAMI": "🎯 16vos Miami",
+    "INST_R16_ATL": "🔥 8vos Atlanta",
+    "INST_QF_KC": "💎 4tos Kansas City",
+    "INST_SF_NY": "🚀 Semifinal New York",
+    "INST_F_LA": "🏆 Final Los Angeles",
 }
 
 
@@ -209,7 +239,8 @@ def _db_toggle_instance_selection(user_id: str, inst_code: str, added: bool) -> 
                 .first()
             )
             if not exists:
-                db.add(LeadSelection(lead_id=lid, event_id=ev.id, quantity=None))
+                # ✅ quantity=1 (no None)
+                db.add(LeadSelection(lead_id=lid, event_id=ev.id, quantity=1))
                 db.commit()
         else:
             (
@@ -302,8 +333,8 @@ async def pick_instances_menu(user_id: str, data: Dict[str, Any]):
         footer_text="Cuando termines, tocá ✅ Listo",
         buttons=[
             {"id": "INST_GROUPS", "title": "Grupos"},
-            {"id": "INST_R32", "title": "16vos"},
-            {"id": "INST_R16", "title": "8vos"},
+            {"id": "INST_R32_MIAMI", "title": "16vos Miami"},
+            {"id": "INST_R16_ATL", "title": "8vos Atlanta"},
         ],
     )
     await _send_buttons(
@@ -312,9 +343,9 @@ async def pick_instances_menu(user_id: str, data: Dict[str, Any]):
         body_text="Seguís eligiendo o finalizá:",
         footer_text="Podés tocar ✅ Listo cuando quieras",
         buttons=[
-            {"id": "INST_QF", "title": "4tos"},
-            {"id": "INST_SF", "title": "Semifinal"},
-            {"id": "INST_F", "title": "Final"},
+            {"id": "INST_QF_KC", "title": "4tos KC"},
+            {"id": "INST_SF_NY", "title": "Semifinal NY"},
+            {"id": "INST_F_LA", "title": "Final LA"},
         ],
     )
     await _send_buttons(
@@ -412,7 +443,10 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
     # 1) WhatsApp interno
     if settings.INTERNAL_SALES_WA_TO:
         try:
-            await send_text(settings.INTERNAL_SALES_WA_TO, build_internal_summary(user_phone, state, data))
+            await send_text(
+                settings.INTERNAL_SALES_WA_TO,
+                build_internal_summary(user_phone, state, data),
+            )
         except Exception as e:
             print("[HANDOFF] Internal WA send failed:", repr(e))
 
@@ -437,6 +471,9 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
 # Main handler
 # -------------------------
 async def handle_input(user_id: str, text: str | None, button_id: str | None):
+    # ✅ normaliza button_id
+    button_id = _normalize_button_id(button_id)
+
     session = get_session(user_id)
     state = session["state"]
     data = session["data"]
@@ -534,7 +571,10 @@ async def handle_input(user_id: str, text: str | None, button_id: str | None):
         if button_id == "INST_DONE":
             _ensure_instances_list(data)
             if not data["instances"]:
-                await _send_text(user_id, "Necesito que elijas al menos una instancia (Grupos/16vos/8vos/4tos/SF/Final).")
+                await _send_text(
+                    user_id,
+                    "Necesito que elijas al menos una instancia (Grupos/16vos/8vos/4tos/SF/Final).",
+                )
                 await pick_instances_menu(user_id, data)
                 return
 
@@ -574,7 +614,7 @@ async def handle_input(user_id: str, text: str | None, button_id: str | None):
             _commit()
             await _send_text(
                 user_id,
-                "Perfecto 👌\n\nPasame *Nombre y Email* (en un solo mensaje).\nEj: Juan Pérez - juan@email.com"
+                "Perfecto 👌\n\nPasame *Nombre y Email* (en un solo mensaje).\nEj: Juan Pérez - juan@email.com",
             )
             return
 
@@ -596,7 +636,7 @@ async def handle_input(user_id: str, text: str | None, button_id: str | None):
             _commit()
             await _send_text(
                 user_id,
-                "Perfecto 👌\n\nPasame *Nombre y Email* (en un solo mensaje).\nEj: Juan Pérez - juan@email.com"
+                "Perfecto 👌\n\nPasame *Nombre y Email* (en un solo mensaje).\nEj: Juan Pérez - juan@email.com",
             )
             return
 
