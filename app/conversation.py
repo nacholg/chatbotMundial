@@ -344,8 +344,8 @@ async def pick_instances_menu(user_id: str, data: Dict[str, Any]):
         footer_text="Podés tocar ✅ Listo cuando quieras",
         buttons=[
             {"id": "INST_QF_KC", "title": "4tos KC"},
-            {"id": "INST_SF_NY", "title": "Semifinal Atlanta"},
-            {"id": "INST_F_LA", "title": "Final New York"},
+            {"id": "INST_SF_ATL", "title": "Semifinal Atlanta"},
+            {"id": "INST_F_NY", "title": "Final New York"},
         ],
     )
     await _send_buttons(
