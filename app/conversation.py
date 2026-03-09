@@ -440,6 +440,8 @@ def build_internal_summary(user_phone: str, state: str, data: Dict[str, Any]) ->
 
 
 async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
+    print("[HANDOFF] entered", user_phone, state, data)
+
     # 1) WhatsApp interno
     if settings.INTERNAL_SALES_WA_TO:
         try:
@@ -447,6 +449,7 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
                 settings.INTERNAL_SALES_WA_TO,
                 build_internal_summary(user_phone, state, data),
             )
+            print("[HANDOFF] internal WA sent")
         except Exception as e:
             print("[HANDOFF] Internal WA send failed:", repr(e))
 
@@ -462,10 +465,19 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
                 data.get("contact", ""),
                 "HUMAN_PENDING",
             ]
+            print("[EXCEL] about to append row:", row)
             await append_row_to_sharepoint_excel(row)
+            print("[EXCEL] append success")
         except Exception as e:
             print("[EXCEL] append failed:", repr(e))
-
+    else:
+        print(
+            "[EXCEL] skipped",
+            {
+                "append_row_to_sharepoint_excel": bool(append_row_to_sharepoint_excel),
+                "MS_EXCEL_ENABLED": getattr(settings, "MS_EXCEL_ENABLED", None),
+            },
+        )
 
 # -------------------------
 # Main handler

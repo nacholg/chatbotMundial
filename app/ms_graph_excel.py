@@ -41,7 +41,30 @@ async def _get_app_token() -> str:
     _token_cache = (access_token, now + expires_in)
     return access_token
 
+async def _graph_get_raw(path: str) -> dict:
+    token = await _get_app_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{_GRAPH_BASE}{path}", headers=headers)
+        print("[GRAPH GET]", path, "status=", r.status_code, "body=", r.text)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Graph GET {path} -> {r.status_code}: {r.text}")
+        return r.json() if r.text.strip() else {}
 
+async def debug_list_excel_tables() -> dict:
+    site_id = await resolve_site_id()
+    item_path = _encode_drive_path(settings.SP_EXCEL_FILE_PATH)
+
+    endpoint = f"/sites/{site_id}/drive/root:/{item_path}:/workbook/tables"
+    return await _graph_get_raw(endpoint)
+
+async def debug_get_excel_item() -> dict:
+    site_id = await resolve_site_id()
+    item_path = _encode_drive_path(settings.SP_EXCEL_FILE_PATH)
+
+    endpoint = f"/sites/{site_id}/drive/root:/{item_path}"
+    return await _graph_get_raw(endpoint)
+    
 async def _graph_get(path: str) -> dict:
     token = await _get_app_token()
     headers = {"Authorization": f"Bearer {token}"}
