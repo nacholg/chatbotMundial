@@ -22,12 +22,12 @@ from app.session_store import (
 
 # ✅ DB helpers para selections
 from app.db import SessionLocal
-from app.models import Event, LeadSelection, Lead
+from app.models import Lead
 
 
 STATE_START = "START"
 STATE_ASK_PAX = "ASK_PAX"
-STATE_PICK_INSTANCES = "PICK_INSTANCES"
+STATE_ASK_STAGE = "ASK_STAGE"
 STATE_ASK_HOTEL = "ASK_HOTEL"
 STATE_ASK_CITY_MODE = "ASK_CITY_MODE"
 STATE_ASK_CITY_TEXT = "ASK_CITY_TEXT"
@@ -150,7 +150,7 @@ async def _send_buttons(
 # -------------------------
 def _normalize_button_id(button_id: Optional[str]) -> Optional[str]:
     """
-    En condiciones normales llega un id simple (ej: INST_QF_KC).
+    En condiciones normales llega un id simple.
     Si por algún bug te llega una string con comas, elegimos el primer token útil.
     """
     if not button_id:
@@ -162,14 +162,19 @@ def _normalize_button_id(button_id: Optional[str]) -> Optional[str]:
 
     if "," in bid:
         parts = [p.strip() for p in bid.split(",") if p.strip()]
-        # prioriza tokens reconocibles
         for p in parts:
-            if p.startswith("INST_") or p in {
-                "MENU_TICKETS", "MENU_HUMAN",
-                "PAX_1_2", "PAX_3_5", "PAX_6_10",
-                "HOTEL_YES", "HOTEL_NO",
-                "CITY_SPECIFIC", "CITY_FLEX",
-                "INST_DONE", "INST_CLEAR",
+            if p in {
+                "MENU_TICKETS",
+                "MENU_HUMAN",
+                "PAX_1_2",
+                "PAX_3_5",
+                "PAX_6_10",
+                "STAGE_GROUPS",
+                "STAGE_R32_PLUS",
+                "HOTEL_YES",
+                "HOTEL_NO",
+                "CITY_SPECIFIC",
+                "CITY_FLEX",
             }:
                 return p
         return parts[0] if parts else bid
@@ -178,107 +183,19 @@ def _normalize_button_id(button_id: Optional[str]) -> Optional[str]:
 
 
 # -------------------------
-# Instancias Argentina (multi-select)
+# Tipo de entradas
 # -------------------------
-# ✅ IMPORTANTE: estos IDs ahora matchean con events.code en tu DB
-INSTANCE_LABELS = {
-    "INST_GROUPS": "🇦🇷 Fase de Grupos",
-    "INST_R32_MIAMI": "🎯 16vos Miami",
-    "INST_R16_ATL": "🔥 8vos Atlanta",
-    "INST_QF_KC": "💎 4tos Kansas City",
-    "INST_SF_ATL": "🚀 Semifinal Atlanta",
-    "INST_F_NY": "🏆 Final New York",
+STAGE_LABELS = {
+    "STAGE_GROUPS": "Fase de grupos",
+    "STAGE_R32_PLUS": "16vos en adelante",
 }
 
 
-def _ensure_instances_list(data: Dict[str, Any]) -> None:
-    if "instances" not in data or not isinstance(data["instances"], list):
-        data["instances"] = []
-
-
-def _toggle_instance(data: Dict[str, Any], inst_id: str) -> bool:
-    """Return True if added, False if removed."""
-    _ensure_instances_list(data)
-    if inst_id in data["instances"]:
-        data["instances"].remove(inst_id)
-        return False
-    data["instances"].append(inst_id)
-    return True
-
-
-def _instances_text(data: Dict[str, Any]) -> str:
-    _ensure_instances_list(data)
-    if not data["instances"]:
+def _stage_text(data: Dict[str, Any]) -> str:
+    stage = data.get("stage")
+    if not stage:
         return "(sin selección)"
-    labels = [INSTANCE_LABELS.get(i, i) for i in data["instances"]]
-    return ", ".join(labels)
-
-
-def _db_toggle_instance_selection(user_id: str, inst_code: str, added: bool) -> None:
-    """
-    Persiste INST_* en lead_selections:
-      - added=True  => insert si no existe
-      - added=False => delete
-    Además: auto-califica lead: open -> qualified/hot
-    """
-    lid = _lead_id(user_id)
-    if not lid:
-        return
-
-    db = SessionLocal()
-    try:
-        ev = db.query(Event).filter(Event.code == inst_code).first()
-        if not ev:
-            print(f"[DB] Event missing for code={inst_code}. Seed events (INST_*).")
-            return
-
-        if added:
-            exists = (
-                db.query(LeadSelection)
-                .filter(LeadSelection.lead_id == lid, LeadSelection.event_id == ev.id)
-                .first()
-            )
-            if not exists:
-                # ✅ quantity=1 (no None)
-                db.add(LeadSelection(lead_id=lid, event_id=ev.id, quantity=1))
-                db.commit()
-        else:
-            (
-                db.query(LeadSelection)
-                .filter(LeadSelection.lead_id == lid, LeadSelection.event_id == ev.id)
-                .delete()
-            )
-            db.commit()
-
-        # auto-qualify
-        count_sel = db.query(LeadSelection).filter(LeadSelection.lead_id == lid).count()
-        lead = db.query(Lead).filter(Lead.id == lid).first()
-        if lead:
-            if count_sel >= 2 and lead.status == "open":
-                lead.status = "hot"
-                db.commit()
-            elif count_sel >= 1 and lead.status == "open":
-                lead.status = "qualified"
-                db.commit()
-
-    except Exception as e:
-        print("[DB] toggle selection failed:", repr(e))
-    finally:
-        db.close()
-
-
-def _db_clear_instance_selections(user_id: str) -> None:
-    lid = _lead_id(user_id)
-    if not lid:
-        return
-    db = SessionLocal()
-    try:
-        db.query(LeadSelection).filter(LeadSelection.lead_id == lid).delete()
-        db.commit()
-    except Exception as e:
-        print("[DB] clear selections failed:", repr(e))
-    finally:
-        db.close()
+    return STAGE_LABELS.get(stage, stage)
 
 
 # -------------------------
@@ -319,42 +236,15 @@ def parse_pax_id(pax_id: str) -> Optional[str]:
     }.get(pax_id)
 
 
-async def pick_instances_menu(user_id: str, data: Dict[str, Any]):
-    selected = _instances_text(data)
-    body = (
-        "Seleccioná una o más instancias de *Argentina - Road to the Final*.\n"
-        "Podés tocar varias opciones.\n\n"
-        f"Seleccionadas: {selected}"
-    )
+async def ask_stage(user_id: str):
     await _send_buttons(
         user_id,
-        header_text="Argentina - Road to the Final",
-        body_text=body,
-        footer_text="Cuando termines, tocá ✅ Listo",
+        header_text="Tipo de entradas",
+        body_text="¿Qué te interesa cotizar?",
+        footer_text="Elegí una opción",
         buttons=[
-            {"id": "INST_GROUPS", "title": "Grupos"},
-            {"id": "INST_R32_MIAMI", "title": "16vos Miami"},
-            {"id": "INST_R16_ATL", "title": "8vos Atlanta"},
-        ],
-    )
-    await _send_buttons(
-        user_id,
-        header_text="Argentina - Road to the Final",
-        body_text="Seguís eligiendo o finalizá:",
-        footer_text="Podés tocar ✅ Listo cuando quieras",
-        buttons=[
-            {"id": "INST_QF_KC", "title": "4tos KC"},
-            {"id": "INST_SF_ATL", "title": "Semifinal Atlanta"},
-            {"id": "INST_F_NY", "title": "Final New York"},
-        ],
-    )
-    await _send_buttons(
-        user_id,
-        header_text="Confirmación",
-        body_text="¿Listo con la selección?",
-        buttons=[
-            {"id": "INST_DONE", "title": "✅ Listo"},
-            {"id": "INST_CLEAR", "title": "🧹 Borrar"},
+            {"id": "STAGE_GROUPS", "title": "⚽ Grupos"},
+            {"id": "STAGE_R32_PLUS", "title": "🏆 16vos+"},
             {"id": "MENU_HUMAN", "title": "👤 Asesor"},
         ],
     )
@@ -391,7 +281,7 @@ async def ask_city_mode(user_id: str):
 # -------------------------
 def build_customer_summary(data: Dict[str, Any]) -> str:
     pax = data.get("pax_range", "-")
-    inst = _instances_text(data)
+    stage = _stage_text(data)
     hotel = data.get("hotel", "(pendiente)")
     city_mode = data.get("city_mode", "(pendiente)")
     city_text = data.get("city_text", "")
@@ -405,7 +295,7 @@ def build_customer_summary(data: Dict[str, Any]) -> str:
         "✅ Resumen de tu consulta\n"
         "• Producto: Entradas Hospitality (Argentina)\n"
         f"• Pasajeros: {pax}\n"
-        f"• Instancias: {inst}\n"
+        f"• Tipo de entradas: {stage}\n"
         f"• Hotel: {hotel}\n"
         f"• Ciudad: {city_line}\n"
         f"• Contacto: {contact}\n"
@@ -414,7 +304,7 @@ def build_customer_summary(data: Dict[str, Any]) -> str:
 
 def build_internal_summary(user_phone: str, state: str, data: Dict[str, Any]) -> str:
     pax = data.get("pax_range", "(sin dato)")
-    inst = _instances_text(data)
+    stage = _stage_text(data)
     hotel = data.get("hotel", "(sin dato)")
     city_mode = data.get("city_mode", "(sin dato)")
     city_text = data.get("city_text", "")
@@ -430,7 +320,7 @@ def build_internal_summary(user_phone: str, state: str, data: Dict[str, Any]) ->
         f"Cliente WA: {user_phone}\n"
         f"Estado: {state}\n"
         f"Pax: {pax}\n"
-        f"Instancias: {inst}\n"
+        f"Tipo de entradas: {stage}\n"
         f"Hotel: {hotel}\n"
         f"Ciudad: {city_line}\n"
         f"Contacto: {contact}\n"
@@ -461,7 +351,7 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
                 ts,
                 user_phone,
                 data.get("pax_range", ""),
-                _instances_text(data),
+                _stage_text(data),
                 data.get("contact", ""),
                 "HUMAN_PENDING",
             ]
@@ -479,11 +369,11 @@ async def _handoff(user_phone: str, state: str, data: Dict[str, Any]) -> None:
             },
         )
 
+
 # -------------------------
 # Main handler
 # -------------------------
 async def handle_input(user_id: str, text: str | None, button_id: str | None):
-    # ✅ normaliza button_id
     button_id = _normalize_button_id(button_id)
 
     session = get_session(user_id)
@@ -540,63 +430,32 @@ async def handle_input(user_id: str, text: str | None, button_id: str | None):
             pax = parse_pax_id(button_id)
             if pax:
                 data["pax_range"] = pax
-                session["state"] = STATE_PICK_INSTANCES
+                session["state"] = STATE_ASK_STAGE
                 _commit()
-                await pick_instances_menu(user_id, data)
+                await ask_stage(user_id)
                 return
 
         if text and text.strip() == "10+":
             data["pax_range"] = "10+"
-            session["state"] = STATE_PICK_INSTANCES
+            session["state"] = STATE_ASK_STAGE
             _commit()
-            await pick_instances_menu(user_id, data)
+            await ask_stage(user_id)
             return
 
         await _send_text(user_id, "No entendí la cantidad. Elegí una opción o escribí 10+.")
         return
 
-    # PICK_INSTANCES (multi)
-    if state == STATE_PICK_INSTANCES:
-        if button_id in INSTANCE_LABELS:
-            added = _toggle_instance(data, button_id)
-
-            # ✅ persistencia en DB (lead_selections)
-            _db_toggle_instance_selection(user_id, button_id, added=added)
-
-            _commit()
-            msg = (
-                f"{'✅ Sumé' if added else '🗑️ Saqué'}: {INSTANCE_LABELS.get(button_id, button_id)}\n\n"
-                f"Seleccionadas: {_instances_text(data)}"
-            )
-            await _send_text(user_id, msg)
-            await pick_instances_menu(user_id, data)
-            return
-
-        if button_id == "INST_CLEAR":
-            data["instances"] = []
-            _db_clear_instance_selections(user_id)
-            _commit()
-            await _send_text(user_id, "🧹 Listo. Borré la selección.")
-            await pick_instances_menu(user_id, data)
-            return
-
-        if button_id == "INST_DONE":
-            _ensure_instances_list(data)
-            if not data["instances"]:
-                await _send_text(
-                    user_id,
-                    "Necesito que elijas al menos una instancia (Grupos/16vos/8vos/4tos/SF/Final).",
-                )
-                await pick_instances_menu(user_id, data)
-                return
-
+    # ASK_STAGE
+    if state == STATE_ASK_STAGE:
+        if button_id in STAGE_LABELS:
+            data["stage"] = button_id
             session["state"] = STATE_ASK_HOTEL
             _commit()
             await ask_hotel(user_id)
             return
 
-        await _send_text(user_id, "Elegí instancias con los botones y tocá ✅ Listo cuando termines.")
-        await pick_instances_menu(user_id, data)
+        await _send_text(user_id, "Elegí una opción: Fase de grupos o 16vos en adelante.")
+        await ask_stage(user_id)
         return
 
     # ASK_HOTEL
@@ -607,6 +466,7 @@ async def handle_input(user_id: str, text: str | None, button_id: str | None):
             _commit()
             await ask_city_mode(user_id)
             return
+
         if button_id == "HOTEL_NO":
             data["hotel"] = "No"
             session["state"] = STATE_ASK_CITY_MODE
